@@ -22,9 +22,6 @@ static struct queue_t running_list;
 #ifdef MLQ_SCHED
 static struct queue_t mlq_ready_queue[MAX_PRIO];
 static int slot[MAX_PRIO];
-
-static int curr_prio = 0;
-static int curr_slot = 0;
 #endif
 
 int queue_empty(void) {
@@ -45,8 +42,6 @@ void init_scheduler(void) {
 		mlq_ready_queue[i].size = 0;
 		slot[i] = MAX_PRIO - i; 
 	}
-	curr_prio = 0;
-	curr_slot = 0;
 #endif
 	ready_queue.size = 0;
 	run_queue.size = 0;
@@ -68,51 +63,57 @@ struct pcb_t * get_mlq_proc(void) {
 	/*TODO: get a process from PRIORITY [ready_queue].
 	 *      It worth to protect by a mechanism.
 	 * */
-
-	for (int scanned = 0; scanned < MAX_PRIO; scanned++) {
-
-        if (!empty(&mlq_ready_queue[curr_prio])) {
-
-            proc = dequeue(&mlq_ready_queue[curr_prio]);
-
-            curr_slot++;
-
-            if (curr_slot >= slot[curr_prio]) {
-                curr_prio = (curr_prio + 1) % MAX_PRIO;
-                curr_slot = 0;
-            }
-
-            break;
-        }
-
-        curr_prio = (curr_prio + 1) % MAX_PRIO;
-        curr_slot = 0;
-    }
-
-	if (proc != NULL)
+	// attempt = 2 is quite buggy when num CPU >= num processes - 2
+	// consider changing it to 1
+	for (int attempt = 0; attempt < 2; attempt++) {
+		int has_process = 0;
+		for (int i = 0; i < MAX_PRIO; i++) {
+			if (!empty(&mlq_ready_queue[i])) {
+				has_process = 1;
+				if (slot[i] > 0) {
+					proc = dequeue(&mlq_ready_queue[i]);
+					slot[i]--; // consume one slot
+					break;
+				}
+			}
+		}
+		// no process in the mlq
+		if (proc != NULL || !has_process) {
+			break;
+		}
+		// there are waiting processes but all slots are exhausted
+		// reset slot allocation
+		for (int i = 0; i < MAX_PRIO; i++) {
+			slot[i] = MAX_PRIO - i;
+		}
+	}
+	
+	if (proc != NULL) {
 		enqueue(&running_list, proc);
-
-    pthread_mutex_unlock(&queue_lock);
-
+	}
+	pthread_mutex_unlock(&queue_lock);
 	return proc;	
 }
 
 void put_mlq_proc(struct pcb_t * proc) {
+	pthread_mutex_lock(&queue_lock);
 	proc->krnl->ready_queue = &ready_queue;
 	proc->krnl->mlq_ready_queue = mlq_ready_queue;
 	proc->krnl->running_list = &running_list;
-
+	
 	/* TODO: put running proc to running_list 
 	 *       It worth to protect by a mechanism.
 	 * 
 	 */
 
-	pthread_mutex_lock(&queue_lock);
+	
+	purgequeue(&running_list, proc);
 	enqueue(&mlq_ready_queue[proc->prio], proc);
 	pthread_mutex_unlock(&queue_lock);
 }
 
 void add_mlq_proc(struct pcb_t * proc) {
+	pthread_mutex_lock(&queue_lock);
 	proc->krnl->ready_queue = &ready_queue;
 	proc->krnl->mlq_ready_queue = mlq_ready_queue;
 	proc->krnl->running_list = &running_list;
@@ -122,7 +123,7 @@ void add_mlq_proc(struct pcb_t * proc) {
 	 * 
 	 */
        
-	pthread_mutex_lock(&queue_lock);
+	
 	enqueue(&mlq_ready_queue[proc->prio], proc);
 	pthread_mutex_unlock(&queue_lock);	
 }
@@ -145,9 +146,10 @@ struct pcb_t * get_proc(void) {
 	pthread_mutex_lock(&queue_lock);
 	/*TODO: get a process from [ready_queue].
 	 *       It worth to protect by a mechanism.
-	 * 
 	 */
-
+	if (!empty(&ready_queue)) {
+		proc = dequeue(&ready_queue);
+	}
 	pthread_mutex_unlock(&queue_lock);
 
 	return proc;
@@ -181,5 +183,3 @@ void add_proc(struct pcb_t * proc) {
 	pthread_mutex_unlock(&queue_lock);	
 }
 #endif
-
-

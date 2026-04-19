@@ -27,36 +27,43 @@ struct pcb_t *dequeue(struct queue_t *q)
         /* TODO: return a pcb whose prioprity is the highest
          * in the queue [q] and remember to remove it from q
          * */
-        if (q == NULL || q->size == 0)
-                return NULL;
+        if (!q) return NULL;
+        if (q->size == 0)
+        {       
+		return NULL;
+        }
 
-        struct pcb_t *proc = q->proc[0];
-
-        for (int i = 0; i < q->size - 1; i++)
-                q->proc[i] = q->proc[i+1];
-
+        struct pcb_t *result = q->proc[0];
+        for (int i = 1; i < q->size; i++)
+        {
+                q->proc[i-1] = q->proc[i];
+        }
         q->size--;
-
-        return proc;
+        return result;
 }
 
 struct pcb_t *purgequeue(struct queue_t *q, struct pcb_t *proc)
 {
         /* TODO: remove a specific item from queue
          * */
-         if (q == NULL || proc == NULL || q->size == 0)
-        return NULL;
-
-    for (int i = 0; i < q->size; i++) {
-        if (q->proc[i] == proc) {
-
-            for (int j=i; j<q->size-1; j++)
-                q->proc[j] = q->proc[j+1];
-
-            q->size--;
-            return proc;
+        if (!q || !proc || empty(q)) return NULL;
+        int index = -1;
+        for (int i = 0; i < q->size; i++)
+        {
+                if (q->proc[i] == proc)
+                {
+                        index = i;
+                        break;
+                }
         }
-    }
-
-    return NULL;
+        if (index < 0)
+                return NULL;
+        
+        struct pcb_t *result = q->proc[index];
+        for (int i = index + 1; i < q->size; i++)
+        {
+                q->proc[i-1] = q->proc[i];
+        }
+        q->size--;
+        return result;
 }
