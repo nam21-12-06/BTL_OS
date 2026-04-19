@@ -27,17 +27,14 @@ struct pcb_t *dequeue(struct queue_t *q)
         /* TODO: return a pcb whose prioprity is the highest
          * in the queue [q] and remember to remove it from q
          * */
-        if (!q) return NULL;
-        if (q->size == 0)
-        {       
-		return NULL;
-        }
+        if (!q || q->size == 0) return NULL;
 
+        // FIFO: lấy phần tử đầu tiên
         struct pcb_t *result = q->proc[0];
+
         for (int i = 1; i < q->size; i++)
-        {
                 q->proc[i-1] = q->proc[i];
-        }
+
         q->size--;
         return result;
 }
