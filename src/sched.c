@@ -71,17 +71,23 @@ struct pcb_t * get_mlq_proc(void) {
     while (count < MAX_PRIO) {
         if (!empty(&mlq_ready_queue[prio])) {
             if (slot[prio] > 0) {
-                /* Queue này còn slot → lấy process */
                 proc = dequeue(&mlq_ready_queue[prio]);
                 slot[prio]--;
-                curr_prio = prio; // giữ nguyên prio này cho lần sau
+                /* Stay on this prio next call only if slots remain,
+                 * otherwise advance to next queue */
+                if (slot[prio] == 0) {
+                    slot[prio] = MAX_PRIO - prio; // reset for future round
+                    curr_prio = (prio + 1) % MAX_PRIO;
+                } else {
+                    curr_prio = prio; // still has slots, stay here
+                }
                 break;
             } else {
-                /* Hết slot → reset và chuyển sang queue kế */
+                /* Should not reach here since we reset on exhaustion,
+                 * but guard anyway */
                 slot[prio] = MAX_PRIO - prio;
             }
         }
-        /* Chuyển sang queue tiếp theo (vòng tròn) */
         prio = (prio + 1) % MAX_PRIO;
         count++;
     }
