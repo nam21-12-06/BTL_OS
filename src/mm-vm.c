@@ -27,10 +27,10 @@
  */
 struct vm_area_struct *get_vma_by_num(struct mm_struct *mm, int vmaid)
 {
-  struct vm_area_struct *pvma = mm->mmap;
-
   if (mm == NULL || mm->mmap == NULL)
     return NULL;
+
+  struct vm_area_struct *pvma = mm->mmap;
 
   while (pvma != NULL)
   {
@@ -167,6 +167,7 @@ int inc_vma_limit(struct pcb_t *caller, int vmaid, addr_t inc_sz)
     return -1;
   }
 
+  free(newrg);
   return 0;
 }
 

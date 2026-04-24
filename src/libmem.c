@@ -33,6 +33,7 @@ static pthread_mutex_t mmvm_lock = PTHREAD_MUTEX_INITIALIZER;
  */
 int enlist_vm_freerg_list(struct mm_struct *mm, struct vm_rg_struct *rg_elmt)
 {
+  struct vm_area_struct *vma;
   struct vm_rg_struct *rg_node;
 
   if (mm == NULL || mm->mmap == NULL || rg_elmt == NULL)
@@ -41,14 +42,18 @@ int enlist_vm_freerg_list(struct mm_struct *mm, struct vm_rg_struct *rg_elmt)
   if (rg_elmt->rg_start >= rg_elmt->rg_end)
     return -1;
 
-  rg_node = mm->mmap->vm_freerg_list;
+  vma = get_vma_by_num(mm, rg_elmt->vmaid);
+  if (vma == NULL)
+    return -1;
+
+  rg_node = vma->vm_freerg_list;
 
   if (rg_node != NULL)
     rg_elmt->rg_next = rg_node;
   else
     rg_elmt->rg_next = NULL;
 
-  mm->mmap->vm_freerg_list = rg_elmt;
+  vma->vm_freerg_list = rg_elmt;
 
   return 0;
 }
@@ -259,6 +264,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
   uint32_t vicpte;
   addr_t vicfpn;
   addr_t tgtfpn;
+  addr_t newswpfpn;
 
   if (mm == NULL || caller == NULL || caller->krnl == NULL || fpn == NULL)
     return -1;
@@ -298,11 +304,16 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 
   vicfpn = PAGING_FPN(vicpte);
 
-  if (__mm_swap_page(caller, vicfpn, swpfpn) < 0)
+  if (MEMPHY_get_freefp(caller->krnl->active_mswp, &newswpfpn) == -1)
     return -1;
 
-  pte_set_swap(caller, vicpgn, caller->krnl->active_mswp_id, swpfpn);
+  if (__mm_swap_page(caller, vicfpn, newswpfpn) < 0)
+    return -1;
+
+  pte_set_swap(caller, vicpgn, caller->krnl->active_mswp_id, newswpfpn);
+  __swap_cp_page(caller->krnl->active_mswp, swpfpn, caller->krnl->mram, vicfpn);
   pte_set_fpn(caller, pgn, vicfpn);
+  MEMPHY_put_freefp(caller->krnl->active_mswp, swpfpn);
   enlist_pgn_node(&caller->krnl->mm->fifo_pgn, pgn);
 
   *fpn = vicfpn;
