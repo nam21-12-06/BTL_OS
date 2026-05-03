@@ -50,8 +50,11 @@ int MEMPHY_seq_read(struct memphy_struct *mp, addr_t addr, BYTE *value)
    if (mp == NULL)
       return -1;
 
-   if (!mp->rdmflg)
+   if (mp->rdmflg)
       return -1; /* Not compatible mode for sequential read */
+
+   if (addr >= mp->maxsz)
+      return -1; /* Address out of bounds */
 
    MEMPHY_mv_csr(mp, addr);
    *value = (BYTE)mp->storage[addr];
@@ -90,8 +93,11 @@ int MEMPHY_seq_write(struct memphy_struct *mp, addr_t addr, BYTE value)
    if (mp == NULL)
       return -1;
 
-   if (!mp->rdmflg)
-      return -1; /* Not compatible mode for sequential read */
+   if (mp->rdmflg)
+      return -1; /* Not compatible mode for sequential write */
+
+   if (addr >= mp->maxsz)
+      return -1; /* Address out of bounds */
 
    MEMPHY_mv_csr(mp, addr);
    mp->storage[addr] = value;
@@ -173,6 +179,19 @@ int MEMPHY_dump(struct memphy_struct *mp)
   /*TODO dump memphy contnt mp->storage
    *     for tracing the memory content
    */
+   int i;
+
+   if (mp == NULL || mp->storage == NULL)
+      return -1;
+
+   for (i = 0; i < mp->maxsz; i++)
+   {
+      if (i % 16 == 0)
+         printf("\n%04x: ", i);
+      printf("%02x ", (unsigned char)mp->storage[i]);
+   }
+   printf("\n");
+
    return 0;
 }
 

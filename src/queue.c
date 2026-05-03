@@ -14,7 +14,6 @@ void enqueue(struct queue_t *q, struct pcb_t *proc)
         /* TODO: put a new process to queue [q] */
         if (q == NULL || proc == NULL)
                 return;
-
         if (q->size >= MAX_QUEUE_SIZE)
                 return;
 
@@ -27,40 +26,38 @@ struct pcb_t *dequeue(struct queue_t *q)
         /* TODO: return a pcb whose prioprity is the highest
          * in the queue [q] and remember to remove it from q
          * */
-        if (!q || q->size == 0) return NULL;
+        int i;
+        struct pcb_t *proc;
 
-        // FIFO: lấy phần tử đầu tiên
-        struct pcb_t *result = q->proc[0];
+        if (q == NULL || q->size <= 0)
+                return NULL;
 
-        for (int i = 1; i < q->size; i++)
-                q->proc[i-1] = q->proc[i];
-
+        proc = q->proc[0];
+        for (i = 1; i < q->size; i++)
+                q->proc[i - 1] = q->proc[i];
         q->size--;
-        return result;
+
+        return proc;
 }
 
 struct pcb_t *purgequeue(struct queue_t *q, struct pcb_t *proc)
 {
         /* TODO: remove a specific item from queue
          * */
-        if (!q || !proc || empty(q)) return NULL;
-        int index = -1;
-        for (int i = 0; i < q->size; i++)
-        {
-                if (q->proc[i] == proc)
-                {
-                        index = i;
-                        break;
+        int index;
+
+        if (q == NULL || proc == NULL || q->size <= 0)
+                return NULL;
+
+        for (index = 0; index < q->size; index++) {
+                if (q->proc[index] == proc) {
+                        int shift;
+                        for (shift = index + 1; shift < q->size; shift++)
+                                q->proc[shift - 1] = q->proc[shift];
+                        q->size--;
+                        return proc;
                 }
         }
-        if (index < 0)
-                return NULL;
-        
-        struct pcb_t *result = q->proc[index];
-        for (int i = index + 1; i < q->size; i++)
-        {
-                q->proc[i-1] = q->proc[i];
-        }
-        q->size--;
-        return result;
+
+        return NULL;
 }

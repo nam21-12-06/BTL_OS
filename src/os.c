@@ -1,9 +1,12 @@
 
 #include "cpu.h"
 #include "timer.h"
+#include "queue.h"
 #include "sched.h"
 #include "loader.h"
 #include "mm.h"
+#undef QUEUE_H
+#include "queue.h"
 #ifdef MM64
 #include "mm64.h"
 #endif
@@ -12,11 +15,34 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 static int time_slot;
 static int num_cpus;
 static int done = 0;
 static struct krnl_t os;
+
+/* Ensure loader publishes arrivals for a slot before CPUs decide dispatch. */
+static pthread_mutex_t loader_slot_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t loader_slot_cond = PTHREAD_COND_INITIALIZER;
+static uint64_t loader_processed_slot = ULLONG_MAX;
+
+static void mark_loader_processed_slot(void)
+{
+	pthread_mutex_lock(&loader_slot_lock);
+	loader_processed_slot = current_time();
+	pthread_cond_broadcast(&loader_slot_cond);
+	pthread_mutex_unlock(&loader_slot_lock);
+}
+
+static void wait_loader_processed_slot(void)
+{
+	pthread_mutex_lock(&loader_slot_lock);
+	while (!done && loader_processed_slot != current_time()) {
+		pthread_cond_wait(&loader_slot_cond, &loader_slot_lock);
+	}
+	pthread_mutex_unlock(&loader_slot_lock);
+}
 
 #ifdef MM_PAGING
 static unsigned long memramsz;
@@ -55,6 +81,8 @@ static void * cpu_routine(void * args) {
 	int time_left = 0;
 	struct pcb_t * proc = NULL;
 	while (1) {
+		wait_loader_processed_slot();
+
 		/* Check the status of current process */
 		if (proc == NULL) {
 			/* No process is running, the we load new process from
@@ -68,6 +96,7 @@ static void * cpu_routine(void * args) {
 			/* The porcess has finish it job */
 			printf("\tCPU %d: Processed %2d has finished\n",
 				id ,proc->pid);
+			purgequeue(proc->krnl->running_list, proc);
 			free(proc);
 			proc = get_proc();
 			time_left = 0;
@@ -137,12 +166,15 @@ static void * ld_routine(void * args) {
 	printf("ld_routine\n");
 	while (i < num_processes) {
 		struct pcb_t * proc = load(ld_processes.path[i]);
-		struct krnl_t * krnl = proc->krnl = &os;	
+		struct krnl_t * krnl = malloc(sizeof(struct krnl_t));
+		*krnl = os; /* inherit global config: queues, devices */
+		proc->krnl = krnl;
 
 #ifdef MLQ_SCHED
 		proc->prio = ld_processes.prio[i];
 #endif
 		while (current_time() < ld_processes.start_time[i]) {
+			mark_loader_processed_slot();
 			next_slot(timer_id);
 		}
 #ifdef MM_PAGING
@@ -155,24 +187,39 @@ static void * ld_routine(void * args) {
 		printf("\tLoaded a process at %s, PID: %d PRIO: %ld\n",
 			ld_processes.path[i], proc->pid, ld_processes.prio[i]);
 		add_proc(proc);
+		mark_loader_processed_slot();
 		free(ld_processes.path[i]);
 		i++;
 		next_slot(timer_id);
 	}
 	free(ld_processes.path);
 	free(ld_processes.start_time);
+	mark_loader_processed_slot();
 	done = 1;
+	pthread_mutex_lock(&loader_slot_lock);
+	pthread_cond_broadcast(&loader_slot_cond);
+	pthread_mutex_unlock(&loader_slot_lock);
 	detach_event(timer_id);
 	pthread_exit(NULL);
 }
 
 static void read_config(const char * path) {
 	FILE * file;
+	int has_pending_proc_line = 0;
+	char pending_proc_line[256];
 	if ((file = fopen(path, "r")) == NULL) {
 		printf("Cannot find configure file at %s\n", path);
 		exit(1);
 	}
 	fscanf(file, "%d %d %d\n", &time_slot, &num_cpus, &num_processes);
+	/*
+	 * Deterministic mode for test replay:
+	 * when OSSIM_DETERMINISTIC=1, force single CPU to avoid
+	 * multi-thread dispatch interleaving differences.
+	 */
+	if (getenv("OSSIM_DETERMINISTIC") != NULL &&
+	    strcmp(getenv("OSSIM_DETERMINISTIC"), "1") == 0)
+		num_cpus = 1;
 	ld_processes.path = (char**)malloc(sizeof(char*) * num_processes);
 	ld_processes.start_time = (unsigned long*)
 		malloc(sizeof(unsigned long) * num_processes);
@@ -189,15 +236,41 @@ static void read_config(const char * path) {
 	for(sit = 1; sit < PAGING_MAX_MMSWP; sit++)
 		memswpsz[sit] = 0;
 #else
-	/* Read input config of memory size: MEMRAM and upto 4 MEMSWP (mem swap)
-	 * Format: (size=0 result non-used memswap, must have RAM and at least 1 SWAP)
-	 *        MEM_RAM_SZ MEM_SWP0_SZ MEM_SWP1_SZ MEM_SWP2_SZ MEM_SWP3_SZ
-	*/
-	fscanf(file, FORMAT_ARG "\n", &memramsz);
-	for(sit = 0; sit < PAGING_MAX_MMSWP; sit++)
-		fscanf(file, FORMAT_ARG, &(memswpsz[sit])); 
+		/*
+		 * Backward-compatible parsing for paging memory config:
+		 * - New format includes a dedicated memory line:
+		 *     MEM_RAM_SZ MEM_SWP0_SZ MEM_SWP1_SZ MEM_SWP2_SZ MEM_SWP3_SZ
+		 * - Legacy format omits this line, so we use defaults and treat the
+		 *   next line as the first process entry.
+		 */
+		memramsz = 268435456UL;
+		memswpsz[0] = 16777216UL;
+		for (sit = 1; sit < PAGING_MAX_MMSWP; sit++)
+			memswpsz[sit] = 0;
 
-       fscanf(file, "\n"); /* Final character */
+		if (fgets(pending_proc_line, sizeof(pending_proc_line), file) != NULL) {
+			unsigned long cfg_ram, cfg_swp0, cfg_swp1, cfg_swp2, cfg_swp3;
+			int cfg_items = sscanf(
+				pending_proc_line,
+				"%lu %lu %lu %lu %lu",
+				&cfg_ram,
+				&cfg_swp0,
+				&cfg_swp1,
+				&cfg_swp2,
+				&cfg_swp3
+			);
+
+			if (cfg_items == 5) {
+				memramsz = cfg_ram;
+				memswpsz[0] = cfg_swp0;
+				memswpsz[1] = cfg_swp1;
+				memswpsz[2] = cfg_swp2;
+				memswpsz[3] = cfg_swp3;
+				has_pending_proc_line = 0;
+			} else {
+				has_pending_proc_line = 1;
+			}
+		}
 #endif
 #endif
 
@@ -212,15 +285,40 @@ static void read_config(const char * path) {
 		strcat(ld_processes.path[i], "input/proc/");
 		char proc[100];
 #ifdef MLQ_SCHED
-		fscanf(file, "%lu %s %lu\n", &ld_processes.start_time[i], proc, &ld_processes.prio[i]);
+		{
+			int scan_res;
+			if (i == 0 && has_pending_proc_line)
+				scan_res = sscanf(pending_proc_line, "%lu %99s %lu", &ld_processes.start_time[i], proc, &ld_processes.prio[i]);
+			else
+				scan_res = fscanf(file, "%lu %99s %lu\n", &ld_processes.start_time[i], proc, &ld_processes.prio[i]);
+
+			if (scan_res != 3) {
+				printf("Invalid process config line at index %d in %s\n", i, path);
+				exit(1);
+			}
+		}
 #else
-		fscanf(file, "%lu %s\n", &ld_processes.start_time[i], proc);
+		{
+			int scan_res;
+			if (i == 0 && has_pending_proc_line)
+				scan_res = sscanf(pending_proc_line, "%lu %99s", &ld_processes.start_time[i], proc);
+			else
+				scan_res = fscanf(file, "%lu %99s\n", &ld_processes.start_time[i], proc);
+
+			if (scan_res != 2) {
+				printf("Invalid process config line at index %d in %s\n", i, path);
+				exit(1);
+			}
+		}
 #endif
 		strcat(ld_processes.path[i], proc);
 	}
 }
 
 int main(int argc, char * argv[]) {
+	/* Keep trace output ordering stable across threads/runs. */
+	setvbuf(stdout, NULL, _IONBF, 0);
+
 	/* Read config */
 	if (argc != 2) {
 		printf("Usage: os [path to configure file]\n");

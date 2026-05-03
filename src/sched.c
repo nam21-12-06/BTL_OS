@@ -36,11 +36,11 @@ int queue_empty(void) {
 
 void init_scheduler(void) {
 #ifdef MLQ_SCHED
-    int i ;
+	int i;
 
-	for (i = 0; i < MAX_PRIO; i ++) {
+	for (i = 0; i < MAX_PRIO; i++) {
 		mlq_ready_queue[i].size = 0;
-		slot[i] = MAX_PRIO - i; 
+		slot[i] = MAX_PRIO - i;
 	}
 #endif
 	ready_queue.size = 0;
@@ -58,45 +58,47 @@ void init_scheduler(void) {
  */
 struct pcb_t * get_mlq_proc(void) {
 	struct pcb_t * proc = NULL;
-	static int curr_prio = 0;
 
 	pthread_mutex_lock(&queue_lock);
 	/*TODO: get a process from PRIORITY [ready_queue].
 	 *      It worth to protect by a mechanism.
 	 * */
+	{
+		int i;
+		int has_ready = 0;
+		int selected_prio = -1;
 
-	int prio = curr_prio;
-    int count = 0;
+		for (i = 0; i < MAX_PRIO; i++) {
+			if (!empty(&mlq_ready_queue[i])) {
+				has_ready = 1;
+				if (slot[i] > 0) {
+					selected_prio = i;
+					break;
+				}
+			}
+		}
 
-    while (count < MAX_PRIO) {
-        if (!empty(&mlq_ready_queue[prio])) {
-            if (slot[prio] > 0) {
-                proc = dequeue(&mlq_ready_queue[prio]);
-                slot[prio]--;
-                /* Stay on this prio next call only if slots remain,
-                 * otherwise advance to next queue */
-                if (slot[prio] == 0) {
-                    slot[prio] = MAX_PRIO - prio; // reset for future round
-                    curr_prio = (prio + 1) % MAX_PRIO;
-                } else {
-                    curr_prio = prio; // still has slots, stay here
-                }
-                break;
-            } else {
-                /* Should not reach here since we reset on exhaustion,
-                 * but guard anyway */
-                slot[prio] = MAX_PRIO - prio;
-            }
-        }
-        prio = (prio + 1) % MAX_PRIO;
-        count++;
-    }
+		if (selected_prio == -1 && has_ready) {
+			for (i = 0; i < MAX_PRIO; i++)
+				slot[i] = MAX_PRIO - i;
 
-    if (proc != NULL)
-        enqueue(&running_list, proc);
+			for (i = 0; i < MAX_PRIO; i++) {
+				if (!empty(&mlq_ready_queue[i])) {
+					selected_prio = i;
+					break;
+				}
+			}
+		}
 
-    pthread_mutex_unlock(&queue_lock);
-    return proc;
+		if (selected_prio != -1) {
+			proc = dequeue(&mlq_ready_queue[selected_prio]);
+			slot[selected_prio]--;
+			enqueue(&running_list, proc);
+		}
+	}
+	pthread_mutex_unlock(&queue_lock);
+
+	return proc;	
 }
 
 void put_mlq_proc(struct pcb_t * proc) {
@@ -150,7 +152,14 @@ struct pcb_t * get_proc(void) {
 	 *       It worth to protect by a mechanism.
 	 * 
 	 */
-	proc = dequeue(&ready_queue); 
+	if (!empty(&run_queue))
+		proc = dequeue(&run_queue);
+	else
+		proc = dequeue(&ready_queue);
+
+	if (proc != NULL)
+		enqueue(&running_list, proc);
+
 	pthread_mutex_unlock(&queue_lock);
 
 	return proc;
@@ -166,6 +175,7 @@ void put_proc(struct pcb_t * proc) {
 	 */
 
 	pthread_mutex_lock(&queue_lock);
+	purgequeue(&running_list, proc);
 	enqueue(&run_queue, proc);
 	pthread_mutex_unlock(&queue_lock);
 }
